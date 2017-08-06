@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.19.3.  By combining all the individual C code files into this
+** version 3.19.4.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -398,9 +398,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.19.3"
-#define SQLITE_VERSION_NUMBER 3019003
-#define SQLITE_SOURCE_ID      "2017-07-28 02:02:45 def55027b1f1db9c083830019dbcc3daed94f6cc70a76b285ac1af9d82f81695"
+#define SQLITE_VERSION        "3.19.4"
+#define SQLITE_VERSION_NUMBER 3019004
+#define SQLITE_SOURCE_ID      "2017-07-31 13:22:31 2dd0c77d54b333beee48c250e61c0002a03d34c5d4da07040ac414bdd36f56f9"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -771,6 +771,9 @@ SQLITE_API int sqlite3_exec(
 #define SQLITE_IOERR_CONVPATH          (SQLITE_IOERR | (26<<8))
 #define SQLITE_IOERR_VNODE             (SQLITE_IOERR | (27<<8))
 #define SQLITE_IOERR_AUTH              (SQLITE_IOERR | (28<<8))
+#define SQLITE_IOERR_BEGIN_ATOMIC      (SQLITE_IOERR | (29<<8))
+#define SQLITE_IOERR_COMMIT_ATOMIC     (SQLITE_IOERR | (30<<8))
+#define SQLITE_IOERR_ROLLBACK_ATOMIC   (SQLITE_IOERR | (31<<8))
 #define SQLITE_LOCKED_SHAREDCACHE      (SQLITE_LOCKED |  (1<<8))
 #define SQLITE_BUSY_RECOVERY           (SQLITE_BUSY   |  (1<<8))
 #define SQLITE_BUSY_SNAPSHOT           (SQLITE_BUSY   |  (2<<8))
@@ -33736,15 +33739,15 @@ static int unixFileControl(sqlite3_file *id, int op, void *pArg){
 #if defined(__linux__) && defined(SQLITE_ENABLE_BATCH_ATOMIC_WRITE)
     case SQLITE_FCNTL_BEGIN_ATOMIC_WRITE: {
       int rc = osIoctl(pFile->h, F2FS_IOC_START_ATOMIC_WRITE);
-      return rc ? SQLITE_ERROR : SQLITE_OK;
+      return rc ? SQLITE_IOERR_BEGIN_ATOMIC : SQLITE_OK;
     }
     case SQLITE_FCNTL_COMMIT_ATOMIC_WRITE: {
       int rc = osIoctl(pFile->h, F2FS_IOC_COMMIT_ATOMIC_WRITE);
-      return rc ? SQLITE_ERROR : SQLITE_OK;
+      return rc ? SQLITE_IOERR_COMMIT_ATOMIC : SQLITE_OK;
     }
     case SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE: {
       int rc = osIoctl(pFile->h, F2FS_IOC_ABORT_VOLATILE_WRITE);
-      return rc ? SQLITE_ERROR : SQLITE_OK;
+      return rc ? SQLITE_IOERR_ROLLBACK_ATOMIC : SQLITE_OK;
     }
 #endif /* __linux__ && SQLITE_ENABLE_BATCH_ATOMIC_WRITE */
 
@@ -89329,7 +89332,15 @@ SQLITE_PRIVATE void sqlite3MemJournalOpen(sqlite3_file *pJfd){
 SQLITE_PRIVATE int sqlite3JournalCreate(sqlite3_file *pJfd){
   int rc = SQLITE_OK;
   MemJournal *p = (MemJournal*)pJfd;
-  if( p->pMethod==&MemJournalMethods && (p->nSpill>0 
+  if( p->pMethod==&MemJournalMethods && (
+#ifdef SQLITE_ENABLE_ATOMIC_WRITE
+     p->nSpill>0
+#else
+     /* While this appears to not be possible without ATOMIC_WRITE, the
+     ** paths are complex, so it seems prudent to leave the test in as
+     ** a NEVER(), in case our analysis is subtly flawed. */
+     NEVER(p->nSpill>0)
+#endif
 #ifdef SQLITE_ENABLE_BATCH_ATOMIC_WRITE
      || (p->flags & SQLITE_OPEN_MAIN_JOURNAL)
 #endif
@@ -101605,15 +101616,6 @@ static void convertToWithoutRowidTable(Parse *pParse, Table *pTab){
   }else{
     pPk = sqlite3PrimaryKeyIndex(pTab);
 
-    /* Bypass the creation of the PRIMARY KEY btree and the sqlite_master
-    ** table entry. This is only required if currently generating VDBE
-    ** code for a CREATE TABLE (not when parsing one as part of reading
-    ** a database schema).  */
-    if( v ){
-      assert( db->init.busy==0 );
-      sqlite3VdbeChangeOpcode(v, pPk->tnum, OP_Goto);
-    }
-
     /*
     ** Remove all redundant columns from the PRIMARY KEY.  For example, change
     ** "PRIMARY KEY(a,b,a,b,c,b,c,d)" into just "PRIMARY KEY(a,b,c,d)".  Later
@@ -101632,6 +101634,15 @@ static void convertToWithoutRowidTable(Parse *pParse, Table *pTab){
   pPk->isCovering = 1;
   if( !db->init.imposterTable ) pPk->uniqNotNull = 1;
   nPk = pPk->nKeyCol;
+
+  /* Bypass the creation of the PRIMARY KEY btree and the sqlite_master
+  ** table entry. This is only required if currently generating VDBE
+  ** code for a CREATE TABLE (not when parsing one as part of reading
+  ** a database schema).  */
+  if( v && pPk->tnum>0 ){
+    assert( db->init.busy==0 );
+    sqlite3VdbeChangeOpcode(v, pPk->tnum, OP_Goto);
+  }
 
   /* The root page of the PRIMARY KEY is the table root page */
   pPk->tnum = pTab->tnum;
@@ -118134,13 +118145,10 @@ static const char *columnTypeImpl(
         ** of the SELECT statement. Return the declaration type and origin
         ** data for the result-set column of the sub-select.
         */
-        if( iCol>=0 && ALWAYS(iCol<pS->pEList->nExpr) ){
+        if( iCol>=0 && iCol<pS->pEList->nExpr ){
           /* If iCol is less than zero, then the expression requests the
           ** rowid of the sub-select or view. This expression is legal (see 
           ** test case misc2.2.2) - it always evaluates to NULL.
-          **
-          ** The ALWAYS() is because iCol>=pS->pEList->nExpr will have been
-          ** caught already by name resolution.
           */
           NameContext sNC;
           Expr *p = pS->pEList->a[iCol].pExpr;
@@ -118250,18 +118258,6 @@ static void generateColumnTypes(
 #endif /* !defined(SQLITE_OMIT_DECLTYPE) */
 }
 
-/*
-** Return the Table objecct in the SrcList that has cursor iCursor.
-** Or return NULL if no such Table object exists in the SrcList.
-*/
-static Table *tableWithCursor(SrcList *pList, int iCursor){
-  int j;
-  for(j=0; j<pList->nSrc; j++){
-    if( pList->a[j].iCursor==iCursor ) return pList->a[j].pTab;
-  }
-  return 0;
-}
-
 
 /*
 ** Generate code that will tell the VDBE the names of columns
@@ -118270,14 +118266,16 @@ static Table *tableWithCursor(SrcList *pList, int iCursor){
 */
 static void generateColumnNames(
   Parse *pParse,      /* Parser context */
-  SrcList *pTabList,  /* List of tables */
-  ExprList *pEList    /* Expressions defining the result set */
+  Select *pSelect     /* Generate column names for this SELECT statement */
 ){
   Vdbe *v = pParse->pVdbe;
   int i;
   Table *pTab;
+  SrcList *pTabList;
+  ExprList *pEList;
   sqlite3 *db = pParse->db;
-  int fullNames, shortNames;
+  int fullName;    /* TABLE.COLUMN if no AS clause and is a direct table ref */
+  int srcName;     /* COLUMN or TABLE.COLUMN if no AS clause and is direct */
 
 #ifndef SQLITE_OMIT_EXPLAIN
   /* If this is an EXPLAIN, skip this step */
@@ -118287,24 +118285,29 @@ static void generateColumnNames(
 #endif
 
   if( pParse->colNamesSet || db->mallocFailed ) return;
+  /* Column names are determined by the left-most term of a compound select */
+  while( pSelect->pPrior ) pSelect = pSelect->pPrior;
+  pTabList = pSelect->pSrc;
+  pEList = pSelect->pEList;
   assert( v!=0 );
   assert( pTabList!=0 );
   pParse->colNamesSet = 1;
-  fullNames = (db->flags & SQLITE_FullColNames)!=0;
-  shortNames = (db->flags & SQLITE_ShortColNames)!=0;
+  fullName = (db->flags & SQLITE_FullColNames)!=0;
+  srcName = (db->flags & SQLITE_ShortColNames)!=0 || fullName;
   sqlite3VdbeSetNumCols(v, pEList->nExpr);
   for(i=0; i<pEList->nExpr; i++){
-    Expr *p;
-    p = pEList->a[i].pExpr;
-    if( NEVER(p==0) ) continue;
+    Expr *p = pEList->a[i].pExpr;
+
+    assert( p!=0 );
     if( pEList->a[i].zName ){
+      /* An AS clause always takes first priority */
       char *zName = pEList->a[i].zName;
       sqlite3VdbeSetColName(v, i, COLNAME_NAME, zName, SQLITE_TRANSIENT);
-    }else if( (p->op==TK_COLUMN || p->op==TK_AGG_COLUMN)
-           && (pTab = tableWithCursor(pTabList, p->iTable))!=0
-    ){
+    }else if( srcName && p->op==TK_COLUMN ){
       char *zCol;
       int iCol = p->iColumn;
+      pTab = p->pTab;
+      assert( pTab!=0 );
       if( iCol<0 ) iCol = pTab->iPKey;
       assert( iCol==-1 || (iCol>=0 && iCol<pTab->nCol) );
       if( iCol<0 ){
@@ -118312,10 +118315,7 @@ static void generateColumnNames(
       }else{
         zCol = pTab->aCol[iCol].zName;
       }
-      if( !shortNames && !fullNames ){
-        sqlite3VdbeSetColName(v, i, COLNAME_NAME, 
-            sqlite3DbStrDup(db, pEList->a[i].zSpan), SQLITE_DYNAMIC);
-      }else if( fullNames ){
+      if( fullName ){
         char *zName = 0;
         zName = sqlite3MPrintf(db, "%s.%s", pTab->zName, zCol);
         sqlite3VdbeSetColName(v, i, COLNAME_NAME, zName, SQLITE_DYNAMIC);
@@ -119129,11 +119129,6 @@ static int multiSelect(
       if( dest.eDest!=priorOp ){
         int iCont, iBreak, iStart;
         assert( p->pEList );
-        if( dest.eDest==SRT_Output ){
-          Select *pFirst = p;
-          while( pFirst->pPrior ) pFirst = pFirst->pPrior;
-          generateColumnNames(pParse, pFirst->pSrc, pFirst->pEList);
-        }
         iBreak = sqlite3VdbeMakeLabel(v);
         iCont = sqlite3VdbeMakeLabel(v);
         computeLimitRegisters(pParse, p, iBreak);
@@ -119204,11 +119199,6 @@ static int multiSelect(
       ** tables.
       */
       assert( p->pEList );
-      if( dest.eDest==SRT_Output ){
-        Select *pFirst = p;
-        while( pFirst->pPrior ) pFirst = pFirst->pPrior;
-        generateColumnNames(pParse, pFirst->pSrc, pFirst->pEList);
-      }
       iBreak = sqlite3VdbeMakeLabel(v);
       iCont = sqlite3VdbeMakeLabel(v);
       computeLimitRegisters(pParse, p, iBreak);
@@ -119816,14 +119806,6 @@ static int multiSelectOrderBy(
   */
   sqlite3VdbeResolveLabel(v, labelEnd);
 
-  /* Set the number of output columns
-  */
-  if( pDest->eDest==SRT_Output ){
-    Select *pFirst = pPrior;
-    while( pFirst->pPrior ) pFirst = pFirst->pPrior;
-    generateColumnNames(pParse, pFirst->pSrc, pFirst->pEList);
-  }
-
   /* Reassembly the compound query so that it will be freed correctly
   ** by the calling function */
   if( p->pPrior ){
@@ -120114,7 +120096,6 @@ static int flattenSubquery(
   Select *pSub1;      /* Pointer to the rightmost select in sub-query */
   SrcList *pSrc;      /* The FROM clause of the outer query */
   SrcList *pSubSrc;   /* The FROM clause of the subquery */
-  ExprList *pList;    /* The result set of the outer query */
   int iParent;        /* VDBE cursor number of the pSub result set temp table */
   int iNewParent = -1;/* Replacement table for iParent */
   int isLeftJoin = 0; /* True if pSub is the right side of a LEFT JOIN */    
@@ -120439,14 +120420,6 @@ static int flattenSubquery(
     ** We look at every expression in the outer query and every place we see
     ** "a" we substitute "x*3" and every place we see "b" we substitute "y+10".
     */
-    pList = pParent->pEList;
-    for(i=0; i<pList->nExpr; i++){
-      if( pList->a[i].zName==0 ){
-        char *zName = sqlite3DbStrDup(db, pList->a[i].zSpan);
-        sqlite3Dequote(zName);
-        pList->a[i].zName = zName;
-      }
-    }
     if( pSub->pOrderBy ){
       /* At this point, any non-zero iOrderByCol values indicate that the
       ** ORDER BY column expression is identical to the iOrderByCol'th
@@ -121773,6 +121746,14 @@ SQLITE_PRIVATE int sqlite3Select(
   }
 #endif
 
+  /* Get a pointer the VDBE under construction, allocating a new VDBE if one
+  ** does not already exist */
+  v = sqlite3GetVdbe(pParse);
+  if( v==0 ) goto select_end;
+  if( pDest->eDest==SRT_Output ){
+    generateColumnNames(pParse, p);
+  }
+
   /* Try to flatten subqueries in the FROM clause up into the main query
   */
 #if !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW)
@@ -121807,11 +121788,6 @@ SQLITE_PRIVATE int sqlite3Select(
     }
   }
 #endif
-
-  /* Get a pointer the VDBE under construction, allocating a new VDBE if one
-  ** does not already exist */
-  v = sqlite3GetVdbe(pParse);
-  if( v==0 ) goto select_end;
 
 #ifndef SQLITE_OMIT_COMPOUND_SELECT
   /* Handle compound SELECT statements using the separate multiSelect()
@@ -122598,12 +122574,6 @@ SQLITE_PRIVATE int sqlite3Select(
   */
 select_end:
   explainSetInteger(pParse->iSelectId, iRestoreSelectId);
-
-  /* Identify column names if results of the SELECT are to be output.
-  */
-  if( rc==SQLITE_OK && pDest->eDest==SRT_Output ){
-    generateColumnNames(pParse, pTabList, pEList);
-  }
 
   sqlite3DbFree(db, sAggInfo.aCol);
   sqlite3DbFree(db, sAggInfo.aFunc);
@@ -199255,7 +199225,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2017-07-28 02:02:45 def55027b1f1db9c083830019dbcc3daed94f6cc70a76b285ac1af9d82f81695", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2017-07-31 13:22:31 2dd0c77d54b333beee48c250e61c0002a03d34c5d4da07040ac414bdd36f56f9", -1, SQLITE_TRANSIENT);
 }
 
 static int fts5Init(sqlite3 *db){
