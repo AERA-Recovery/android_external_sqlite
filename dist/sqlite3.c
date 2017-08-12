@@ -84,15 +84,6 @@
 #endif
 
 /*
-** When sqlite is built for the VNDK, ICU is disabled because
-** libicuuc.so and libicui18n.so aren't available then.
-** TODO(b/64514237): move this to Android.bp
-*/
-#ifdef __ANDROID_VNDK__
-#undef SQLITE_ENABLE_ICU
-#endif
-
-/*
 ** Include the header file used to customize the compiler options for MSVC.
 ** This should be done first so that it can successfully prevent spurious
 ** compiler warnings due to subsequent content in this file and other files
