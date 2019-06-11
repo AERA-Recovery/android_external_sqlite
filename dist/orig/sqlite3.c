@@ -160262,7 +160262,7 @@ static int fts3SegReaderNext(
   ** safe (no risk of overread) even if the node data is corrupted. */
   pNext += fts3GetVarint32(pNext, &nPrefix);
   pNext += fts3GetVarint32(pNext, &nSuffix);
-  if( nSuffix<=0 
+  if( nSuffix<=0
    || (&pReader->aNode[pReader->nNode] - pNext)<nSuffix
    || nPrefix>pReader->nTermAlloc
   ){
@@ -174528,7 +174528,7 @@ static void rbuCreateImposterTable2(sqlite3rbu *p, RbuObjIter *pIter){
         int iCid = sqlite3_column_int(pXInfo, 1);
         int bDesc = sqlite3_column_int(pXInfo, 3);
         const char *zCollate = (const char*)sqlite3_column_text(pXInfo, 4);
-        zCols = rbuMPrintf(p, "%z%sc%d %s COLLATE %Q", zCols, zComma, 
+        zCols = rbuMPrintf(p, "%z%sc%d %s COLLATE %Q", zCols, zComma,
             iCid, pIter->azTblType[iCid], zCollate
         );
         zPk = rbuMPrintf(p, "%z%sc%d%s", zPk, zComma, iCid, bDesc?" DESC":"");
@@ -174589,7 +174589,7 @@ static void rbuCreateImposterTable(sqlite3rbu *p, RbuObjIter *pIter){
         ** "PRIMARY KEY" to the imposter table column declaration. */
         zPk = "PRIMARY KEY ";
       }
-      zSql = rbuMPrintf(p, "%z%s\"%w\" %s %sCOLLATE %Q%s", 
+      zSql = rbuMPrintf(p, "%z%s\"%w\" %s %sCOLLATE %Q%s",
           zSql, zComma, zCol, pIter->azTblType[iCol], zPk, zColl,
           (pIter->abNotNull[iCol] ? " NOT NULL" : "")
       );
@@ -176781,7 +176781,7 @@ static void rbuMainlistRemove(rbu_file *p){
 }
 
 /*
-** Given that zWal points to a buffer containing a wal file name passed to 
+** Given that zWal points to a buffer containing a wal file name passed to
 ** either the xOpen() or xAccess() VFS method, search the main-db list for
 ** a file-handle opened by the same database connection on the corresponding
 ** database file.
