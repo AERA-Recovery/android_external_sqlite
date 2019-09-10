@@ -400,7 +400,7 @@ extern "C" {
 */
 #define SQLITE_VERSION        "3.18.2"
 #define SQLITE_VERSION_NUMBER 3018002
-#define SQLITE_SOURCE_ID      "2018-12-19 01:38:18 4bb21d8205b3c72b94442018a0544ecc55e3320ef2593f0e3350142b7f2a7663"
+#define SQLITE_SOURCE_ID      "2019-09-03 19:40:52 b54aa18b0fe4d683c602ed2ba59ded6c33168982d14ea14a12b4e00cde8bf973"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -167025,6 +167025,7 @@ static int rtreeInit(
 }
 
 
+#if defined(SQLITE_TEST)
 /*
 ** Implementation of a scalar function that decodes r-tree nodes to
 ** human readable strings. This can be used for debugging and analysis.
@@ -167086,6 +167087,7 @@ static void rtreenode(sqlite3_context *ctx, int nArg, sqlite3_value **apArg){
   
   sqlite3_result_text(ctx, zText, -1, sqlite3_free);
 }
+#endif
 
 /* This routine implements an SQL function that returns the "depth" parameter
 ** from the front of a blob that is an r-tree node.  For example:
@@ -167115,9 +167117,11 @@ static void rtreedepth(sqlite3_context *ctx, int nArg, sqlite3_value **apArg){
 */
 SQLITE_PRIVATE int sqlite3RtreeInit(sqlite3 *db){
   const int utf8 = SQLITE_UTF8;
-  int rc;
+  int rc = SQLITE_OK;
 
+#if defined(SQLITE_TEST)
   rc = sqlite3_create_function(db, "rtreenode", 2, utf8, 0, rtreenode, 0, 0);
+#endif
   if( rc==SQLITE_OK ){
     rc = sqlite3_create_function(db, "rtreedepth", 1, utf8, 0,rtreedepth, 0, 0);
   }
@@ -189086,7 +189090,9 @@ static int fts5HashEntrySort(
   for(iSlot=0; iSlot<pHash->nSlot; iSlot++){
     Fts5HashEntry *pIter;
     for(pIter=pHash->aSlot[iSlot]; pIter; pIter=pIter->pHashNext){
-      if( pTerm==0 || 0==memcmp(pIter->zKey, pTerm, nTerm) ){
+      if( pTerm==0 
+       || (strlen(pIter->zKey)>=nTerm && 0==memcmp(pIter->zKey, pTerm, nTerm))
+      ){
         Fts5HashEntry *pEntry = pIter;
         pEntry->pScanNext = 0;
         for(i=0; ap[i]; i++){
@@ -198282,7 +198288,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2018-12-19 01:38:18 4bb21d8205b3c72b94442018a0544ecc55e3320ef2593f0e3350142b7f2a7663", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2019-09-03 19:40:52 b54aa18b0fe4d683c602ed2ba59ded6c33168982d14ea14a12b4e00cde8bf973", -1, SQLITE_TRANSIENT);
 }
 
 static int fts5Init(sqlite3 *db){
